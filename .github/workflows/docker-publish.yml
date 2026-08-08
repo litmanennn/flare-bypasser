@@ -7,42 +7,30 @@ name: Docker
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - "main"
     # Publish semver tags as releases.
-    tags: [ 'v*.*.*' ]
+    tags:
+      - "v*.*.*"
+
   workflow_dispatch:
 
 env:
   # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
-  # github.repository as <account>/<repo>
+
+  # github.repository = owner/repository
   IMAGE_NAME: ${{ github.repository }}
 
-
 jobs:
+
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          #- builder: ubuntu-latest
-          # platform: linux/x86_64
-          #- builder: ubuntu-latest
-          #  platform: linux/amd64
           - builder: ubuntu-latest
             platform: linux/arm64
-          #- builder: ubuntu-latest
-          #  platform: linux/aarch64
-          #- builder: ubuntu-latest
-          #  platform: linux/arm/v7
-          #- builder: ubuntu-latest
-          #  platform: linux/arm/v8
-          #- builder: ubuntu-latest # No chrome
-          #  platform: linux/arm/v6
-          #- builder: ubuntu-latest # No gost, no chrome
-          #  platform: linux/s390x
-          #- builder: ubuntu-latest # No gost, custom chrome
-          #  platform: linux/ppc64le
 
     runs-on: ${{ matrix.builder }}
 
@@ -60,38 +48,35 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Install the cosign tool except on PR
-      # https://github.com/sigstore/cosign-installer
+      # Install the cosign tool
       - name: Install cosign
-        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 #v3.5.0
+        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20
         with:
-          cosign-release: 'v2.2.4'
+          cosign-release: "v2.2.4"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # Set up BuildKit Docker container builder to be able to build
-      # multi-platform images and export cache
-      # https://github.com/docker/setup-buildx-action
+      # Set up BuildKit Docker container builder
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226
 
-      # Login to docker hub for push only digest packages
-      - name: Login to dockerhub
+      # Login to GitHub Container Registry
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata (tags, labels) for Docker
-      # https://github.com/docker/metadata-action
+      # Extract Docker metadata
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
+      # Build ARM64 image and push it by digest
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
@@ -101,6 +86,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
+      # Save the digest so the merge job can use it
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
@@ -115,7 +101,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # merge images to one multi-platform image
+
+  # Create the final tagged image
   merge:
     needs:
       - build
@@ -152,7 +139,7 @@ jobs:
             org.opencontainers.image.description=Flare Bypass Server
             org.opencontainers.image.vendor=yuri.kuznecov@gmail.com
 
-      - name: Login to dockerhub
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -162,19 +149,29 @@ jobs:
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t ${{ env.REGISTRY }}/" + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t ${{ env.REGISTRY }}/" + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect image
         run: |
           set -e
           set -o pipefail
-          echo "${{ steps.meta.outputs.tags }}" | sed -r 's/[ ]+/ /g' | tr ' ' '\n' | sed -r 's|^|${{ env.REGISTRY }}/|' | \
-            while read IMAGE_NAME ; do \
-              docker buildx imagetools inspect "$IMAGE_NAME" || exit 1 ; \
-            done
-          echo "${{ steps.meta.outputs.tags }}" | sed -r 's/[ ]+/ /g' | tr ' ' '\n' | sed -r 's|^|${{ env.REGISTRY }}/|' | \
-            head -n1 >/tmp/image_to_test_run
+
+          echo "${{ steps.meta.outputs.tags }}" \
+            | sed -r 's/[ ]+/ /g' \
+            | tr ' ' '\n' \
+            | sed -r 's|^|${{ env.REGISTRY }}/|' \
+            | while read IMAGE_NAME ; do
+                docker buildx imagetools inspect "$IMAGE_NAME" || exit 1
+              done
+
+          echo "${{ steps.meta.outputs.tags }}" \
+            | sed -r 's/[ ]+/ /g' \
+            | tr ' ' '\n' \
+            | sed -r 's|^|${{ env.REGISTRY }}/|' \
+            | head -n1 > /tmp/image_to_test_run
+
           echo "===== /tmp/image_to_test_run ====="
           cat /tmp/image_to_test_run
 
@@ -186,16 +183,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      # TODO: publish to docker.io
 
-    image-test-run:
+  # Test the ARM64 image
+  image-test-run:
     needs:
       - merge
 
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download digests
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download image information
         uses: actions/download-artifact@v4
         with:
           name: image_to_test_run
@@ -208,8 +208,25 @@ jobs:
         run: |
           set -e
           set -o pipefail
-          echo "IMAGE_NAME_TO_TEST=$(cat /tmp/image_to_test_run)" >> $GITHUB_ENV
+
+          IMAGE_NAME_TO_TEST=$(cat /tmp/image_to_test_run)
+
+          echo "IMAGE_NAME_TO_TEST=$IMAGE_NAME_TO_TEST" >> $GITHUB_ENV
           echo "To test image: $IMAGE_NAME_TO_TEST"
-          docker container run --platform linux/arm64 -d -p 20080:8080 "$IMAGE_NAME_TO_TEST"
+
+          docker container run \
+            --platform linux/arm64 \
+            -d \
+            -p 20080:8080 \
+            "$IMAGE_NAME_TO_TEST"
+
           bash ./tests/server_tests/sites_test.sh
-          docker rm $(docker stop $(docker ps -a -q --filter ancestor="$IMAGE_NAME_TO_TEST" --format="{{.ID}}"))
+
+          docker rm $(
+            docker stop $(
+              docker ps -a \
+                -q \
+                --filter ancestor="$IMAGE_NAME_TO_TEST" \
+                --format="{{.ID}}"
+            )
+          )
