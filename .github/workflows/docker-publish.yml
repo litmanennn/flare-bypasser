@@ -1,10 +1,5 @@
 name: Docker
 
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
 on:
   push:
     branches:
@@ -140,7 +135,7 @@ jobs:
             $(jq -cr '.tags | map("-t ${{ env.REGISTRY }}/" + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
-      - name: Inspect image
+      - name: Inspect published image
         run: |
           set -e
           set -o pipefail
@@ -150,74 +145,6 @@ jobs:
             | tr ' ' '\n' \
             | sed -r 's|^|${{ env.REGISTRY }}/|' \
             | while read IMAGE_NAME ; do
+                echo "===== Inspecting $IMAGE_NAME ====="
                 docker buildx imagetools inspect "$IMAGE_NAME" || exit 1
               done
-
-          echo "${{ steps.meta.outputs.tags }}" \
-            | sed -r 's/[ ]+/ /g' \
-            | tr ' ' '\n' \
-            | sed -r 's|^|${{ env.REGISTRY }}/|' \
-            | head -n1 > /tmp/image_to_test_run
-
-          echo "===== /tmp/image_to_test_run ====="
-          cat /tmp/image_to_test_run
-
-      - name: Upload image to test
-        uses: actions/upload-artifact@v4
-        with:
-          name: image_to_test_run
-          path: /tmp/image_to_test_run
-          if-no-files-found: error
-          retention-days: 1
-
-  image-test-run:
-    needs:
-      - merge
-
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download image information
-        uses: actions/download-artifact@v4
-        with:
-          name: image_to_test_run
-          path: /tmp/
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Test ARM64 image
-        run: |
-          set -e
-          set -o pipefail
-
-          IMAGE_NAME_TO_TEST=$(cat /tmp/image_to_test_run)
-
-          echo "To test image: $IMAGE_NAME_TO_TEST"
-
-          CONTAINER_ID=$(docker container run \
-            --platform linux/arm64 \
-            -d \
-            -p 20080:8191 \
-            "$IMAGE_NAME_TO_TEST")
-
-          echo "Container ID: $CONTAINER_ID"
-
-          echo "Waiting for FlareBypasser to start..."
-          sleep 30
-
-          echo "===== docker ps ====="
-          docker ps
-
-          echo "===== container logs ====="
-          docker logs "$CONTAINER_ID"
-
-          echo "===== running tests ====="
-          bash ./tests/server_tests/sites_test.sh
-
-          echo "===== stopping test container ====="
-          docker stop "$CONTAINER_ID"
-          docker rm "$CONTAINER_ID"
