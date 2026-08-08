@@ -9,21 +9,16 @@ on:
   push:
     branches:
       - "main"
-    # Publish semver tags as releases.
     tags:
       - "v*.*.*"
 
   workflow_dispatch:
 
 env:
-  # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
-
-  # github.repository = owner/repository
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-
   build:
     strategy:
       fail-fast: false
@@ -48,7 +43,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Install the cosign tool
       - name: Install cosign
         uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20
         with:
@@ -57,11 +51,9 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # Set up BuildKit Docker container builder
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226
 
-      # Login to GitHub Container Registry
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -69,14 +61,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract Docker metadata
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-      # Build ARM64 image and push it by digest
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
@@ -86,7 +76,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
-      # Save the digest so the merge job can use it
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
@@ -101,8 +90,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-
-  # Create the final tagged image
   merge:
     needs:
       - build
@@ -183,8 +170,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-
-  # Test the ARM64 image
   image-test-run:
     needs:
       - merge
@@ -211,22 +196,28 @@ jobs:
 
           IMAGE_NAME_TO_TEST=$(cat /tmp/image_to_test_run)
 
-          echo "IMAGE_NAME_TO_TEST=$IMAGE_NAME_TO_TEST" >> $GITHUB_ENV
           echo "To test image: $IMAGE_NAME_TO_TEST"
 
-          docker container run \
+          CONTAINER_ID=$(docker container run \
             --platform linux/arm64 \
             -d \
-            -p 20080:8080 \
-            "$IMAGE_NAME_TO_TEST"
+            -p 20080:8191 \
+            "$IMAGE_NAME_TO_TEST")
 
+          echo "Container ID: $CONTAINER_ID"
+
+          echo "Waiting for FlareBypasser to start..."
+          sleep 15
+
+          echo "===== docker ps ====="
+          docker ps
+
+          echo "===== container logs ====="
+          docker logs "$CONTAINER_ID"
+
+          echo "===== running tests ====="
           bash ./tests/server_tests/sites_test.sh
 
-          docker rm $(
-            docker stop $(
-              docker ps -a \
-                -q \
-                --filter ancestor="$IMAGE_NAME_TO_TEST" \
-                --format="{{.ID}}"
-            )
-          )
+          echo "===== stopping test container ====="
+          docker stop "$CONTAINER_ID"
+          docker rm "$CONTAINER_ID"
