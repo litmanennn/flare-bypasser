@@ -188,28 +188,28 @@ jobs:
 
       # TODO: publish to docker.io
 
-  image-test-run:
-  needs:
-    - merge
+    image-test-run:
+    needs:
+      - merge
 
-  runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
 
-  steps:
-    - name: Download digests
-      uses: actions/download-artifact@v4
-      with:
-        name: image_to_test_run
-        path: /tmp/
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          name: image_to_test_run
+          path: /tmp/
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-    - name: Test ARM64 image
-      run: |
-        set -e
-        set -o pipefail
-        echo "IMAGE_NAME_TO_TEST=$(cat /tmp/image_to_test_run)" >> $GITHUB_ENV
-        echo "To test image: $IMAGE_NAME_TO_TEST"
-        docker container run --platform linux/arm64 -d -p 20080:8080 "$IMAGE_NAME_TO_TEST"
-        bash ./tests/server_tests/sites_test.sh
-        docker rm $(docker stop $(docker ps -a -q --filter ancestor="$IMAGE_NAME_TO_TEST" --format="{{.ID}}"))
+      - name: Test ARM64 image
+        run: |
+          set -e
+          set -o pipefail
+          echo "IMAGE_NAME_TO_TEST=$(cat /tmp/image_to_test_run)" >> $GITHUB_ENV
+          echo "To test image: $IMAGE_NAME_TO_TEST"
+          docker container run --platform linux/arm64 -d -p 20080:8080 "$IMAGE_NAME_TO_TEST"
+          bash ./tests/server_tests/sites_test.sh
+          docker rm $(docker stop $(docker ps -a -q --filter ancestor="$IMAGE_NAME_TO_TEST" --format="{{.ID}}"))
